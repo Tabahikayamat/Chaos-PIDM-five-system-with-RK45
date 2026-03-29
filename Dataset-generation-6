@@ -1,0 +1,65 @@
+print("─" * 70)
+print("  CELL 7 · Dataset Generation  (DOP853 trajectories)")
+print("─" * 70)
+
+def generate_chaotic_dataset(
+    sys_type: str = "lorenz",
+    n_samples: int = 1000,
+    n_points: int = 1000,
+    dt: float = 0.05,
+    transient: int = 700,
+    ood: bool = False,
+    seed: int = None,
+) -> np.ndarray:
+    rng = np.random.RandomState(seed)
+    cfg = CONFIG[sys_type]
+    fn = get_sys_fn(sys_type)
+    param_ranges = cfg["ood_ranges"] if ood else cfg["ranges"]
+    state_dim = cfg["state_dim"]
+    ic_range = cfg.get("ic_range", [(-5, 5)] * state_dim)
+    t_total_end = (n_points + transient) * dt
+    t_eval_full = np.linspace(0, t_total_end, n_points + transient)
+
+    data = []
+    _AMP_BOUNDS = {"lorenz": 500., "rossler": 200., "hyper5d": 500., "lorenz96": 200., "rabinovich": 10.}
+    amp_limit = _AMP_BOUNDS.get(sys_type, 1e4)
+
+    pbar = tqdm(total=n_samples, desc=f"  DOP853 {sys_type}{'[OOD]' if ood else ''}")
+    
+    while len(data) < n_samples:
+        p_vals = [rng.uniform(*param_ranges[i]) for i in range(cfg["param_dim"])]
+        x0 = [rng.uniform(r[0], r[1]) for r in ic_range]
+
+        traj = integrate_trajectory(fn, x0, (0, t_total_end), t_eval_full, p_vals, sys_type=sys_type)
+
+        if traj is not None and np.isfinite(traj).all() and np.abs(traj[transient:]).max() < amp_limit:
+            traj_seg = traj[transient:]
+            p_arr = np.stack([np.full(n_points, p) for p in p_vals], axis=0)
+            data.append(np.vstack([traj_seg.T, p_arr]))
+            pbar.update(1)
+        # RECTIFICATION: Removed noise-injection. Failed samples are simply ignored and retried.
+
+    pbar.close()
+    return np.array(data, dtype=np.float32)
+
+
+def print_dataset_stats(name: str, data: np.ndarray, sys_type: str) -> None:
+    n, C, L = data.shape
+    s_dim   = CONFIG[sys_type]["state_dim"]
+    p_dim   = CONFIG[sys_type]["param_dim"]
+    pnames  = CONFIG[sys_type]["param_names"]
+    print(f"\n  Dataset: {name}  |  shape={data.shape}  |  dtype={data.dtype}")
+    print(f"  {'Channel':<18}  {'min':>9}  {'max':>9}  {'mean':>9}  {'std':>9}")
+    print(f"  {'─'*18}  {'─'*9}  {'─'*9}  {'─'*9}  {'─'*9}")
+    labels = [f"state_{i}" for i in range(s_dim)] + [f"param {pnames[j]}" for j in range(p_dim)]
+    for c, lbl in enumerate(labels):
+        ch = data[:, c, :]
+        print(f"  {lbl:<18}  {ch.min():>9.3f}  {ch.max():>9.3f}  {ch.mean():>9.3f}  {ch.std():>9.3f}")
+    n_bad = np.sum(~np.isfinite(data))
+    print(f"\n  Non-finite values: {n_bad}  {'✓' if n_bad == 0 else '✗  WARNING!'}")
+
+
+print("\n  Dataset generation functions defined.")
+for s, cfg in CONFIG["integrator_settings"].items():
+    print(f"  {s:<12} → {cfg['method']:<6}  rtol={cfg['rtol']:.0e}  atol={cfg['atol']:.0e}")
+print("\n  [CELL 7 COMPLETE]\n")
