@@ -1,0 +1,76 @@
+print("─" * 70)
+print("  CELL 4 · Reproducibility & Checkpoint / Resume System")
+print("─" * 70)
+
+def set_seed(s: int) -> None:
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(s)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark     = False
+
+GLOBAL_SEED = CONFIG["training"]["seed"]
+set_seed(GLOBAL_SEED)
+
+
+# CHECKPOINT / RESUME SYSTEM  [NEW-1]
+#
+#  Every completed phase is serialised to disk.  On re-run, the cell checks
+#  for an existing checkpoint and skips recomputation automatically.
+#
+#  Saved data:
+#   • checkpoint_train_{sys}.pkl   → model weights, prep, diff, raw, history
+#   • checkpoint_eval_id_{sys}.pkl → evaluation results dict (ID condition)
+#   • checkpoint_eval_ood_{sys}.pkl→ evaluation results dict (OOD condition)
+#   • checkpoint_ablation.pkl      → full ablation sweep results
+
+
+CKPT_DIR = Path(CONFIG["paths"]["checkpoints"])
+
+def _ckpt_path(name: str) -> Path:
+    return CKPT_DIR / f"checkpoint_{name}.pkl"
+
+def save_checkpoint(name: str, data: dict) -> None:
+    path = _ckpt_path(name)
+    torch.save(data, path)
+    print(f"  ✓ Checkpoint saved  → {path.name}")
+
+def load_checkpoint(name):
+    path = _ckpt_path(name)
+    if path.exists():
+        try:
+            data = torch.load(path, map_location=DEVICE, weights_only=False)
+            print(f"  ↩  Checkpoint loaded ← {path.name}")
+            return data
+        except Exception as e:
+            print(f"  Corrupt checkpoint {path.name} — deleting and retraining ({e})")
+            path.unlink()
+            return None
+    return None
+
+def checkpoint_exists(name: str) -> bool:
+    return _ckpt_path(name).exists()
+
+def delete_checkpoint(name: str) -> None:
+    path = _ckpt_path(name)
+    if path.exists():
+        path.unlink()
+        print(f"  ✗ Checkpoint deleted: {path.name}")
+
+def list_checkpoints() -> None:
+    ckpts = sorted(CKPT_DIR.glob("checkpoint_*.pkl"))
+    if not ckpts:
+        print("  (no checkpoints found)")
+    else:
+        print(f"  {'Checkpoint':<45}  {'Size':>8}")
+        print(f"  {'─'*45}  {'─'*8}")
+        for p in ckpts:
+            print(f"  {p.name:<45}  {p.stat().st_size / 1024:.0f} KB")
+
+print(f"\n  Global seed: {GLOBAL_SEED}")
+print(f"  Checkpoint directory: {CKPT_DIR}")
+print("\n  Existing checkpoints:")
+list_checkpoints()
+print("\n  [CELL 4 COMPLETE]\n")
