@@ -8,45 +8,6 @@ except ImportError:
 
 
 # %%
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  PIDM-DP · Physics-Informed Diffusion Model – Dormand-Prince Edition       ║
-# ║  VERSION 9 — PUBLICATION BUILD                                             ║
-# ╠══════════════════════════════════════════════════════════════════════════════╣
-# ║  Integrator Upgrade:                                                        ║
-# ║   [INT-1] NumPy ODE generation now uses scipy solve_ivp with DOP853        ║
-# ║           (Dormand-Prince 8th-order adaptive) instead of odeint/RK4.       ║
-# ║           Gives significantly better trajectory accuracy for chaotic sys.   ║
-# ║   [INT-2] Torch guidance upgraded from fixed-step RK4 to Dormand-Prince    ║
-# ║           RK45 (6-stage, 5th-order) – better physics constraint accuracy.  ║
-# ║  Scientific Fixes (V8 → V9):                                               ║
-# ║   [SCI-8] Per-system physics guidance weights (w_phy_override) so that     ║
-# ║           high-dim Lorenz96 & sensitive Rabinovich get correct weighting.  ║
-# ║   [SCI-9] Rabinovich initial conditions broadened + transient extended.    ║
-# ║   [SCI-10] Lorenz96 physics weight reduced to 0.3 (diffusion captures      ║
-# ║            manifold well; heavy physics constraint was hurting RMSE).      ║
-# ║  New Features:                                                              ║
-# ║   [NEW-1] Full checkpoint / resume system — every phase is saved.          ║
-# ║           If session dies, re-run the cell and it picks up from the last   ║
-# ║           completed phase automatically.                                   ║
-# ║   [NEW-2] Vanilla Diffusion baseline (no physics guidance) added for      ║
-# ║           ablation: shows exactly what the physics component contributes.  ║
-# ║   [NEW-3] Additional baseline: LSTM (bidirectional) imputation.            ║
-# ║   [NEW-4] Observation-density sweep (2%, 5%, 10%) and noise sweep.        ║
-# ║   [NEW-5] Publication-quality figures: LaTeX fonts, journal color palette, ║
-# ║            vector PDF output, standardized layout.                         ║
-# ║   [NEW-6] Per-condition (ID / OOD) ablation table in the grand summary.   ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
-BANNER = """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║     PIDM-DP  ·  Physics-Informed Diffusion — Dormand-Prince Edition        ║
-║                       VERSION 9 — PUBLICATION BUILD                        ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-"""
-print(BANNER)
-
-
-# %%
 print("─" * 70)
 print("  CELL 2 · Imports & Environment")
 print("─" * 70)
@@ -224,8 +185,7 @@ CONFIG = {
         "patience":     15,
         "seed":         42,
     },
-    # ── MERGED FIX: Single clean guidance block ─────────────────────────────
-    # BOTH notebooks had a duplicate-key bug here: two "w_phy" and two
+
     # "w_phy_override" entries inside this dict. Python silently kept only the
     # last value for each key, discarding w_phy=2.0 and the correct overrides.
     # This is now the single authoritative guidance block.
@@ -347,6 +307,8 @@ list_checkpoints()
 print("\n  [CELL 4 COMPLETE]\n")
 
 
+
+#---------------------------------------------------------------------------------------------
 # %%
 print("─" * 70)
 print("  CELL 5 · ODE Physics Functions (DOP853 / LSODA with Kill-Switch)")
@@ -447,8 +409,10 @@ def integrate_trajectory(fn, y0, t_span, t_eval, params, sys_type=None, method="
     return None
 
 print("\n  [CELL 5 COMPLETE]\n")
+#----------------------------------------------------------------------------------------------------------------------------------
 
-# %%
+
+
 # ============================================================================
 # RECTIFIED CELL 6: Differentiable Torch Physics — Dormand-Prince RK45
 # ============================================================================
@@ -512,9 +476,11 @@ def dp_rk45_step(fn, s, p, dt):
     k6 = fn(s + dt*(9017/3168)*k1  - dt*(355/33)*k2    + dt*(46732/5247)*k3 + dt*(49/176)*k4 - dt*(5103/18656)*k5, p)
 
     return s + dt*(35/384*k1 + 500/1113*k3 + 125/192*k4 - 2187/6784*k5 + 11/84*k6)
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-# --- Consistency Validation ---
+    
+# --- Consistency Validation ---------------------------------------------------------------------------------------------------------------------------------------------------
 print("═" * 70)
 print("  CELL 6 · Differentiable Torch Physics — Consistency Validation")
 print("═" * 70)
@@ -619,8 +585,10 @@ print("\n  Dataset generation functions defined.")
 for s, cfg in CONFIG["integrator_settings"].items():
     print(f"  {s:<12} → {cfg['method']:<6}  rtol={cfg['rtol']:.0e}  atol={cfg['atol']:.0e}")
 print("\n  [CELL 7 COMPLETE]\n")
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-# %%
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 8 · Preprocessing, Masking & Observation Noise")
 print("─" * 70)
@@ -668,9 +636,11 @@ assert _m[:,3:].sum() == 0, "Param channels should not be observed"
 del _d, _m, _o
 print("  [OK] Masking unit tests passed")
 print("\n  [CELL 8 COMPLETE]\n")
+#----------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-# %%
+
+#------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 9 · Physics-Informed Guidance (with Parameter Pooling)")
 print("─" * 70)
@@ -703,7 +673,7 @@ def stable_guidance(x_t, t, x_obs_noisy, mask, model, diff, prep, sys_type):
         s_dim = CONFIG[sys_type]["state_dim"]
         s     = x0p[:, :s_dim, :-1]
         
-        # [NEW FIX]: Parameter Gradient Pooling
+        # Parameter Gradient Pooling
         # Force the physics solver to use the time-averaged parameter for the whole 
         # trajectory. This stops the parameters from absorbing local state noise 
         # and forces the model to find the true global constants!
@@ -729,8 +699,10 @@ def stable_guidance(x_t, t, x_obs_noisy, mask, model, diff, prep, sys_type):
 
 print("  stable_guidance() — FIXED: log1p(MSE) + Parameter Gradient Pooling.")
 print("\n  [CELL 9 COMPLETE]\n")
+#------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-# %%
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 10 · Neural Architecture  (Temporal U-Net with Cross-Attention)")
 print("─" * 70)
@@ -839,9 +811,10 @@ for sname in ["lorenz", "rossler", "hyper5d", "rabinovich", "lorenz96"]:
     del _m, _x, _y
 
 print("\n  [CELL 10 COMPLETE]\n")
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-# %%
+#--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 11 · Diffusion Scheduler")
 print("─" * 70)
@@ -1024,8 +997,10 @@ def run_enkf(sys_name, x_gt_phys, obs_idx, noise_std):
 print("  EnKF defined with blind prior and RK4 propagation.")
 print(f"  Ensemble size: {CONFIG['enkf']['n_ensemble']}")
 print("\n  [CELL 12 COMPLETE]\n")
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-# %%
+
+#-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 13 · Evaluation Metrics")
 print("─" * 70)
@@ -1142,8 +1117,10 @@ print("  NOTE: nolds bypassed — custom estimator (np.linalg.norm, true distanc
 print("        Validated: Lorenz ~2% error, Rössler ~11% error vs known refs.")
 print("        Rössler tolerance set to 35% — λ=0.071 is at estimator resolution limit.")
 print("\n  [CELL 13 COMPLETE]\n")
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-# %%
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 14 · Training Pipeline")
 print("─" * 70)
@@ -1236,9 +1213,10 @@ def train_pidm(sys_type: str, verbose: bool = True) -> tuple:
 
 print("  train_pidm() defined — will execute in Phase 1.")
 print("\n  [CELL 14 COMPLETE]\n")
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-# %%
+#------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 15 · Evaluation Pipeline  (PIDM-DP + EnKF + Pure AI)")
 print("─" * 70)
@@ -1265,9 +1243,7 @@ def evaluate_system(sys_name, model, prep, diff, raw_test, n_trials=30, label=""
     model = model.to(DEVICE)
     fn_np = get_sys_fn(sys_name)
 
-    # ── FIX-LYAP-1: Use per-system lyap_len from CONFIG instead of the
-    #    global data_cfg["lyap_len"].  Lorenz needs 10000 pts, Rabinovich
-    #    15000 pts to get reliable Rosenstein estimates. ────────────────
+
     lyap_len  = CONFIG[sys_name]["lyap_params"]["len"]
     t_long    = np.linspace(0, lyap_len * data_cfg["dt"], lyap_len)
 
@@ -1379,17 +1355,16 @@ def evaluate_system(sys_name, model, prep, diff, raw_test, n_trials=30, label=""
         # ── Lyapunov ─────────────────────────────────────────────────────────
         print(" Lyap..", end="", flush=True)
 
-        # FIX-LYAP-2: GT trajectory uses TRUE params and TRUE IC — this is the
-        # reference ground truth and must never use inferred values.
+
         gt_long = integrate_trajectory(
             fn_np,
             _safe_ic(x_gt[:s_dim, 0]),
             (0, t_long[-1]), t_long,
-            _safe_params(gt_params),       # ← always true params
+            _safe_params(gt_params),      
             sys_type=sys_name
         )
 
-        # FIX-LYAP-3: PIDM and PureAI Lyapunov computed by re-integrating
+       
         # the ODE from the RECONSTRUCTED IC using INFERRED params (early window).
         # This correctly measures what the model "believes" the system is doing.
         pidm_long = integrate_trajectory(
@@ -1410,7 +1385,7 @@ def evaluate_system(sys_name, model, prep, diff, raw_test, n_trials=30, label=""
             fn_np,
             _safe_ic(enkf_p[:s_dim, 0]),
             (0, t_long[-1]), t_long,
-            _safe_params(enkf_params),     # ← FIX: early-window params
+            _safe_params(enkf_params),     
             sys_type=sys_name
         )
 
@@ -1456,8 +1431,10 @@ print("    [FIX-LYAP-3]  PIDM/AI/EnKF Lyapunov: uses early-window inferred param
 print("    [FIX-LYAP-4]  sys_type passed to lyapunov_rosenstein for per-system tuning")
 print("    [NEW]         param_errors stored per trial for paper table generation")
 print("\n  [CELL 15 COMPLETE]\n")
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-# %%
+
+# %%----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("─" * 70)
 print("  CELL 16 · Statistical Reporting & Publication Figures")
 print("─" * 70)
@@ -1604,9 +1581,11 @@ def print_grand_summary(all_res_id, all_res_ood):
 
 print("  All reporting functions defined.")
 print("\n  [CELL 16 COMPLETE]\n")
+#------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-# %%
+
+# %%-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("═" * 70)
 print("  PHASE 1 · Training PIDM-DP on All Systems  [CHECKPOINT/RESUME]")
 print("═" * 70)
@@ -1692,9 +1671,11 @@ for sys_name in _SYSTEMS:
         print_statistical_report(sys_name, res, label="ID")
 
 print("\n  [PHASE 2 COMPLETE]\n")
+#----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-# %%
+
+# %%-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 print("═" * 70)
 print("  PHASE 3 · Out-of-Distribution Evaluation  [CHECKPOINT/RESUME]")
 print("═" * 70)
