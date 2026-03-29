@@ -1,0 +1,63 @@
+print("─" * 70)
+print("  CELL 11 · Diffusion Scheduler")
+print("─" * 70)
+
+class Diffusion:
+    def __init__(self, T, b_start, b_end):
+        self.T          = T
+        self.betas      = torch.linspace(b_start, b_end, T, device=DEVICE)
+        self.alphas     = 1.0 - self.betas
+        self.alpha_bars = torch.cumprod(self.alphas, dim=0)
+
+    def to_device(self, device):
+        self.betas      = self.betas.to(device)
+        self.alphas     = self.alphas.to(device)
+        self.alpha_bars = self.alpha_bars.to(device)
+        return self
+
+    def q_sample(self, x0, t, noise):
+        ab = self.alpha_bars[t][:, None, None]
+        return torch.sqrt(ab)*x0 + torch.sqrt(1.0 - ab)*noise
+
+
+def guided_reconstruction(model, diff, prep, x_true_norm, mask,
+                            guidance_fn=None, show_progress=False):
+    """DDPM reverse diffusion with optional physics guidance."""
+    model.eval()
+    B = x_true_norm.shape[0]
+    x = torch.randn_like(x_true_norm).to(DEVICE)
+
+    steps = tqdm(reversed(range(diff.T)), total=diff.T,
+                 disable=not show_progress, leave=False, desc="  Reverse diffusion")
+    for t_idx in steps:
+        t    = torch.full((B,), t_idx, device=DEVICE, dtype=torch.float)
+        beta = diff.betas[t_idx]
+        ab   = diff.alpha_bars[t_idx]
+        ab_p = diff.alpha_bars[t_idx-1] if t_idx > 0 else torch.tensor(1.0, device=DEVICE)
+
+        with torch.no_grad():
+            ep  = model(x, t)
+            x0h = torch.clamp((x - torch.sqrt(1.0 - ab)*ep)/torch.sqrt(ab), -3.0, 3.0)
+            mean = (torch.sqrt(ab_p)*beta/(1.0 - ab))*x0h \
+                 + (torch.sqrt(diff.alphas[t_idx])*(1.0 - ab_p)/(1.0 - ab))*x
+            var   = beta*(1.0 - ab_p)/(1.0 - ab)
+            noise = torch.randn_like(x) if t_idx > 0 else torch.zeros_like(x)
+            x     = mean + torch.sqrt(var)*noise
+
+        if guidance_fn is not None:
+            try:
+                g = guidance_fn(x, t)
+                if torch.isfinite(g).all():
+                    x = (x + g).detach()
+            except Exception:
+                pass
+
+    return x
+
+
+# Diffusion schedule check
+_dc = Diffusion(CONFIG["diffusion"]["T"], CONFIG["diffusion"]["beta_start"], CONFIG["diffusion"]["beta_end"])
+ab = _dc.alpha_bars.cpu().numpy()
+print(f"  Schedule check: ᾱ(t=0)={ab[0]:.4f}  ᾱ(t=T/2)={ab[499]:.4f}  ᾱ(t=T-1)={ab[-1]:.6f}")
+del _dc
+print("\n  [CELL 11 COMPLETE]\n")
