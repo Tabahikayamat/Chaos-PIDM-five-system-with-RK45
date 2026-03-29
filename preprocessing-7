@@ -1,0 +1,47 @@
+print("─" * 70)
+print("  CELL 8 · Preprocessing, Masking & Observation Noise")
+print("─" * 70)
+
+class DataPreprocessor:
+    def __init__(self, data_np: np.ndarray):
+        self.min_v = torch.tensor(data_np.min(axis=(0,2), keepdims=True), dtype=torch.float32).to(DEVICE)
+        self.max_v = torch.tensor(data_np.max(axis=(0,2), keepdims=True), dtype=torch.float32).to(DEVICE)
+
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        return 2.0*(x.to(DEVICE) - self.min_v)/(self.max_v - self.min_v + 1e-8) - 1.0
+
+    def denormalize(self, xn: torch.Tensor) -> torch.Tensor:
+        return (xn.to(DEVICE) + 1.0)/2.0*(self.max_v - self.min_v) + self.min_v
+
+    def to_device(self, device):
+        self.min_v = self.min_v.to(device)
+        self.max_v = self.max_v.to(device)
+        return self
+
+
+def make_random_mask(shape, obs_ratio, device, state_dim, rng=None):
+    B, C, L = shape
+    n_obs   = max(1, int(L * obs_ratio))
+    _rng    = rng if rng is not None else np.random
+    obs_idx = np.sort(_rng.choice(L, n_obs, replace=False))
+    mask    = torch.zeros(shape, device=device)
+    mask[:, :state_dim, obs_idx] = 1.0
+    return mask, obs_idx
+
+
+def add_observation_noise(x_norm, mask, noise_std):
+    x_noisy  = torch.zeros_like(x_norm)
+    obs      = mask > 0
+    noise    = torch.randn(obs.sum().item(), device=x_norm.device) * noise_std
+    x_noisy[obs] = x_norm[obs] + noise
+    return x_noisy
+
+
+# Unit tests
+_d = torch.zeros(2,6,100)
+_m, _o = make_random_mask(_d.shape, 0.10, torch.device("cpu"), 3)
+assert int(_m[0,0].sum()) == 10, "Mask count wrong"
+assert _m[:,3:].sum() == 0, "Param channels should not be observed"
+del _d, _m, _o
+print("  [OK] Masking unit tests passed")
+print("\n  [CELL 8 COMPLETE]\n")
