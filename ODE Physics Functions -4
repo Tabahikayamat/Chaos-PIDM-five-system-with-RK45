@@ -1,0 +1,99 @@
+print("─" * 70)
+print("  CELL 5 · ODE Physics Functions (DOP853 / LSODA with Kill-Switch)")
+print("─" * 70)
+
+def lorenz_sys(t, y, p1, p2, p3):
+    x, yy, z = y
+    return [p1*(yy - x), x*(p2 - z) - yy, x*yy - p3*z]
+
+def rossler_sys(t, y, p1, p2, p3):
+    x, yy, z = y
+    return [-yy - z, x + p1*yy, p2 + z*(x - p3)]
+
+def hyper5d_sys(t, y, p1, p2, p3):
+    x, yy, z, w, v = y
+    return [p1*(yy - x)+w, p2*x - yy - x*z+v, x*yy - p3*z, -x*z+0.1*w, -yy*z+0.1*v]
+
+def lorenz96_sys(t, y, p1):
+    x = np.asarray(y)
+    dxdt = (np.roll(x,-1) - np.roll(x,2)) * np.roll(x,1) - x + p1
+    return dxdt.tolist()
+
+def rabinovich_sys(t, y, p1, p2):
+    x, yy, z = y
+    return [
+        yy*(z - 1.0 + x**2) + p2*x,
+        x*(3.0*z + 1.0 - x**2) + p2*yy,
+        -2.0*z*(p1 + x*yy)
+    ]
+
+_SYS_FN_MAP = {
+    "lorenz": lorenz_sys, "rossler": rossler_sys, "hyper5d": hyper5d_sys,
+    "lorenz96": lorenz96_sys, "rabinovich": rabinovich_sys,
+}
+
+def get_sys_fn(sys_type: str):
+    if sys_type not in _SYS_FN_MAP:
+        raise ValueError(f"Unknown sys_type '{sys_type}'.")
+    return _SYS_FN_MAP[sys_type]
+
+
+def integrate_trajectory(fn, y0, t_span, t_eval, params, sys_type=None, method="DOP853"):
+    if sys_type is not None and sys_type in CONFIG.get("integrator_settings", {}):
+        s = CONFIG["integrator_settings"][sys_type]
+        method   = s["method"]
+        rtol     = s["rtol"]
+        atol     = s["atol"]
+        max_step = s["max_step"]
+    else:
+        rtol, atol, max_step = 1e-8, 1e-10, 0.1
+
+    # -------------------------------------------------------------------------
+    # SCI-PY KILL SWITCH: Prevent infinite loops on exploding trajectories
+    # -------------------------------------------------------------------------
+    _BOUNDS = {"lorenz": 500., "rossler": 500., "hyper5d": 500., "lorenz96": 200., "rabinovich": 50.}
+    bound = _BOUNDS.get(sys_type, 1000.)
+
+    def blowup_event(t, y, *args):
+        # Trigger event if max absolute value exceeds boundary
+        return bound - np.max(np.abs(y))
+    blowup_event.terminal = True
+    blowup_event.direction = -1
+
+    def _pad_failed_sol(sol_y):
+        # If it blew up early, pad the rest of the array with NaNs so shapes match
+        pad_len = len(t_eval) - sol_y.shape[1]
+        if pad_len > 0:
+            pad = np.full((sol_y.shape[0], pad_len), np.nan)
+            return np.hstack([sol_y, pad])
+        return sol_y
+
+    try:
+        sol = solve_ivp(
+            lambda t, y: fn(t, y, *params),
+            t_span, y0, method=method,
+            t_eval=t_eval, dense_output=False,
+            rtol=rtol, atol=atol, max_step=max_step,
+            events=[blowup_event]
+        )
+        if sol.success or sol.status == 1:
+            return _pad_failed_sol(sol.y).T
+    except Exception:
+        pass
+
+    # Fallback to LSODA
+    try:
+        sol = solve_ivp(
+            lambda t, y: fn(t, y, *params),
+            t_span, y0, method="LSODA",
+            t_eval=t_eval, rtol=1e-4, atol=1e-6,
+            events=[blowup_event]
+        )
+        if sol.success or sol.status == 1:
+            return _pad_failed_sol(sol.y).T
+    except Exception:
+        pass
+        
+    return None
+
+print("\n  [CELL 5 COMPLETE]\n")
