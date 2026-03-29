@@ -1,0 +1,58 @@
+print("─" * 70)
+print("  CELL 9 · Physics-Informed Guidance (with Parameter Pooling)")
+print("─" * 70)
+
+def stable_guidance(x_t, t, x_obs_noisy, mask, model, diff, prep, sys_type):
+    gcfg = CONFIG["guidance"]
+
+    base_w_phy = gcfg["w_phy_override"].get(sys_type, gcfg.get("w_phy", 2.0))
+
+    # Skip guidance completely if weight is 0 (Pure AI baseline)
+    if base_w_phy == 0.0:
+        return torch.zeros_like(x_t)
+
+    t_idx  = t[0].item() if t.dim() > 0 else t.item()
+    t_frac = 1.0 - (t_idx / float(diff.T))
+    w_phy  = base_w_phy * t_frac
+
+    xi = x_t.detach().requires_grad_(True)
+
+    with torch.enable_grad():
+        eps = model(xi, t)
+        ab  = diff.alpha_bars[t.long()].view(-1, 1, 1)
+        x0h = (xi - torch.sqrt(1.0 - ab) * eps) / torch.sqrt(ab)
+
+        # ── Physics Loss (unnormalized log1p MSE + Parameter Pooling) ──
+        x0p = prep.denormalize(x0h)
+        fn  = get_torch_fn(sys_type)
+        dt  = CONFIG["data"]["dt"]
+
+        s_dim = CONFIG[sys_type]["state_dim"]
+        s     = x0p[:, :s_dim, :-1]
+        
+        # [NEW FIX]: Parameter Gradient Pooling
+        # Force the physics solver to use the time-averaged parameter for the whole 
+        # trajectory. This stops the parameters from absorbing local state noise 
+        # and forces the model to find the true global constants!
+        p     = x0p[:, s_dim:, :].mean(dim=2, keepdim=True)
+
+        s_next_pred   = dp_rk45_step(fn, s, p, dt)
+        s_next_actual = x0p[:, :s_dim, 1:]
+
+        # log1p(MSE) is dimensionless, numerically stable, and scale-invariant
+        l_phy = torch.log1p(F.mse_loss(s_next_pred, s_next_actual))
+
+        # ── Data Loss (normalised space) ──
+        l_data = F.mse_loss(x0h[mask > 0], x_obs_noisy[mask > 0])
+
+        total = (gcfg["w_data"] * l_data) + (w_phy * l_phy)
+        grad  = torch.autograd.grad(total, xi)[0]
+
+    gnorm = torch.norm(grad) + 1e-8
+    clip  = torch.clamp(gnorm, max=gcfg["grad_clip"])
+    
+    return -(grad / gnorm) * clip
+
+
+print("  stable_guidance() — FIXED: log1p(MSE) + Parameter Gradient Pooling.")
+print("\n  [CELL 9 COMPLETE]\n")
