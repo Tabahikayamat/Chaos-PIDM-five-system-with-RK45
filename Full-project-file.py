@@ -251,15 +251,6 @@ set_seed(GLOBAL_SEED)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECKPOINT / RESUME SYSTEM  [NEW-1]
-#
-#  Every completed phase is serialised to disk.  On re-run, the cell checks
-#  for an existing checkpoint and skips recomputation automatically.
-#
-#  Saved data:
-#   • checkpoint_train_{sys}.pkl   → model weights, prep, diff, raw, history
-#   • checkpoint_eval_id_{sys}.pkl → evaluation results dict (ID condition)
-#   • checkpoint_eval_ood_{sys}.pkl→ evaluation results dict (OOD condition)
-#   • checkpoint_ablation.pkl      → full ablation sweep results
 # ══════════════════════════════════════════════════════════════════════════════
 
 CKPT_DIR = Path(CONFIG["paths"]["checkpoints"])
@@ -418,9 +409,9 @@ print("\n  [CELL 5 COMPLETE]\n")
 
 
 
-# ============================================================================
-# RECTIFIED CELL 6: Differentiable Torch Physics — Dormand-Prince RK45
-# ============================================================================
+
+# CELL 6: Differentiable Torch Physics — Dormand-Prince RK45
+
 import torch
 import numpy as np
 
@@ -567,7 +558,7 @@ def generate_chaotic_dataset(
             p_arr = np.stack([np.full(n_points, p) for p in p_vals], axis=0)
             data.append(np.vstack([traj_seg.T, p_arr]))
             pbar.update(1)
-        # RECTIFICATION: Removed noise-injection. Failed samples are simply ignored and retried.
+    
 
     pbar.close()
     return np.array(data, dtype=np.float32)
@@ -682,10 +673,7 @@ def stable_guidance(x_t, t, x_obs_noisy, mask, model, diff, prep, sys_type):
         s_dim = CONFIG[sys_type]["state_dim"]
         s     = x0p[:, :s_dim, :-1]
         
-        # Parameter Gradient Pooling
-        # Force the physics solver to use the time-averaged parameter for the whole 
-        # trajectory. This stops the parameters from absorbing local state noise 
-        # and forces the model to find the true global constants!
+
         p     = x0p[:, s_dim:, :].mean(dim=2, keepdim=True)
 
         s_next_pred   = dp_rk45_step(fn, s, p, dt)
@@ -915,7 +903,7 @@ def run_enkf(sys_name, x_gt_phys, obs_idx, noise_std):
 
     H   = np.zeros((s_dim, tot_dim)); H[:s_dim, :s_dim] = np.eye(s_dim)
     R   = np.eye(s_dim) * obs_noise_std ** 2
-    # [FIX-ENKF-1] Minimum regularisation — prevents singular innovation covariance
+    #  Minimum regularisation — prevents singular innovation covariance
     REG = np.eye(tot_dim) * max(ekf["pf_regularisation"], 1e-4)
 
     result = np.zeros((tot_dim, n_points))
@@ -937,7 +925,7 @@ def run_enkf(sys_name, x_gt_phys, obs_idx, noise_std):
             return np.full_like(s_in, np.nan)
 
     def rk4_step_np(s, p):
-        # Clamp state before each evaluation — keeps Rabinovich ensemble bounded
+        
         s = np.clip(s, -_clip_bound, _clip_bound)
         k1 = _safe_eval(s, p)
         if not np.isfinite(k1).all():
@@ -954,7 +942,7 @@ def run_enkf(sys_name, x_gt_phys, obs_idx, noise_std):
         result = s + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
         return np.clip(result, -_clip_bound, _clip_bound)
 
-    INFLATION = 1.02   # [FIX-ENKF-2] multiplicative covariance inflation factor
+    INFLATION = 1.02   # multiplicative covariance inflation factor
                        # expands ensemble spread slightly each step to prevent collapse
 
     for step in range(n_points):
@@ -977,7 +965,7 @@ def run_enkf(sys_name, x_gt_phys, obs_idx, noise_std):
                 else:
                     ens[:s_dim, j] = np.clip(ens[:s_dim, j], -_clip_bound, _clip_bound)
 
-        # [FIX-ENKF-2] Multiplicative inflation — re-centres ensemble, inflates spread
+        
         if step in obs_set:
             mean_ens = np.mean(ens, axis=1, keepdims=True)
             ens      = mean_ens + INFLATION * (ens - mean_ens)
@@ -985,12 +973,12 @@ def run_enkf(sys_name, x_gt_phys, obs_idx, noise_std):
             pos  = int(np.where(obs_idx == step)[0][0])
             Pf   = np.cov(ens) + REG
 
-            # [FIX-ENKF-1] Use solve instead of inv — avoids LinAlgError on singular matrix
+            
             S    = H @ Pf @ H.T + R
             try:
                 K = Pf @ H.T @ np.linalg.solve(S, np.eye(s_dim))
             except np.linalg.LinAlgError:
-                # Last resort: pseudoinverse
+                
                 K = Pf @ H.T @ np.linalg.pinv(S)
 
             for j in range(n_ens):
@@ -1286,9 +1274,7 @@ def evaluate_system(sys_name, model, prep, diff, raw_test, n_trials=30, label=""
 
     _INF_TRAJ = np.full((s_dim + p_dim, data_cfg["n_points"]), np.inf)
 
-    # ── FIX-PARAMS: helper — extract parameters from early trajectory window.
-    #    Using first 300 timesteps where the reconstruction is still tight,
-    #    rather than the last 100 where chaotic drift has already accumulated.
+
     def _extract_params(recon_arr):
         early_end = min(300, recon_arr.shape[1])
         return [float(np.median(recon_arr[s_dim + j, :early_end])) for j in range(p_dim)]
@@ -1380,12 +1366,12 @@ def evaluate_system(sys_name, model, prep, diff, raw_test, n_trials=30, label=""
 
        
         # the ODE from the RECONSTRUCTED IC using INFERRED params (early window).
-        # This correctly measures what the model "believes" the system is doing.
+        #  correctly measures what the model "believes" the system is doing.
         pidm_long = integrate_trajectory(
             fn_np,
             _safe_ic(recon_p[:s_dim, 0]),
             (0, t_long[-1]), t_long,
-            _safe_params(pidm_params),     # ← FIX: early-window params
+            _safe_params(pidm_params),    
             sys_type=sys_name
         )
         pureai_long = integrate_trajectory(
@@ -1403,7 +1389,7 @@ def evaluate_system(sys_name, model, prep, diff, raw_test, n_trials=30, label=""
             sys_type=sys_name
         )
 
-        # FIX-LYAP-4: Pass sys_type so the estimator uses per-system lyap_params
+
         # (emb_dim, lag, min_tsep, tlen) tuned for each system's dynamics.
         gt_lyap     = lyapunov_rosenstein(gt_long,     sys_type=sys_name) if gt_long     is not None else np.nan
         pidm_lyap   = lyapunov_rosenstein(pidm_long,   sys_type=sys_name) if pidm_long   is not None else np.nan
@@ -1425,7 +1411,7 @@ def evaluate_system(sys_name, model, prep, diff, raw_test, n_trials=30, label=""
 
         print(f" |  {pidm_rmse:>9.4f}  {pidm_lyap:>8.3f}  {pureai_lyap:>8.3f}")
 
-    # ── Per-system parameter error summary printed at end of eval ─────────────
+
     print(f"\n  Parameter Identification Summary — {sys_name.upper()}{tag}")
     p_names = CONFIG[sys_name]["param_names"]
     all_errs = {pn: [results["pidm_param_errors"][i][pn] for i in range(n_trials)] for pn in p_names}
@@ -1454,7 +1440,7 @@ print("─" * 70)
 print("  CELL 16 · Statistical Reporting & Publication Figures")
 print("─" * 70)
 
-# Journal color palette
+
 C = PALETTE
 
 def print_statistical_report(sys_name, res, label=""):
@@ -1619,7 +1605,7 @@ for sys_name in _SYSTEMS:
     ck      = load_checkpoint(ck_name)
 
     if ck is not None:
-        # ── Resume from checkpoint ──────────────────────────────────────────
+       
         models[sys_name]     = ck["model"].to(DEVICE)
         preps[sys_name]      = ck["prep"].to_device(DEVICE)
         diffs[sys_name]      = ck["diff"]
@@ -1628,7 +1614,7 @@ for sys_name in _SYSTEMS:
         print(f"  [SKIP] {sys_name.upper()} — loaded from checkpoint  "
               f"(best_val={min(h['val_loss'] for h in ck['history']):.6f})")
     else:
-        # ── Train from scratch ──────────────────────────────────────────────
+      
         set_seed(GLOBAL_SEED)
         m, p, d, raw, hist = train_pidm(sys_name, verbose=True)
         save_checkpoint(ck_name, {
@@ -1733,7 +1719,7 @@ print("  Systems: All 5 Systems")
 print("  λ_phy values:", CONFIG["lambda_phy_sweep"])
 print()
 
-# ── RECTIFIED: Use all systems instead of just Lorenz and Rossler ──
+
 ABLATION_SYSTEMS = _SYSTEMS  
 N_ABL = 5  # reduced n for speed
 
@@ -1783,33 +1769,29 @@ for w in CONFIG["lambda_phy_sweep"]:
 
 print("\n  [PHASE 4 COMPLETE]\n")
 
-# %%
-# ── DROP-IN REPLACEMENT for latent_ode_reconstruct ───────────────────────────
-# Paste this over the existing latent_ode_reconstruct function in the SOA cell.
-# Fix: squeeze mn/mx from (1, s_dim, 1) → (s_dim, 1) before broadcasting.
+
 
 def latent_ode_reconstruct(model, x_gt_phys, obs_idx_np, sys_name):
     s_dim = CONFIG[sys_name]["state_dim"]
     L     = CONFIG["data"]["n_points"]
     dt    = CONFIG["data"]["dt"]
 
-    # FIX: reshape to (s_dim, 1) so broadcasting against (s_dim, L) is correct
-    mn = model._norm_min.reshape(s_dim, 1)   # was (1, s_dim, 1) → wrong axis
+    mn = model._norm_min.reshape(s_dim, 1)   
     mx = model._norm_max.reshape(s_dim, 1)
 
-    def _norm(x):   return 2*(x-mn)/(mx-mn+1e-8)-1   # (s_dim,L)
-    def _denorm(x): return (x+1)/2*(mx-mn+1e-8)+mn   # (s_dim,L)
+    def _norm(x):   return 2*(x-mn)/(mx-mn+1e-8)-1   
+    def _denorm(x): return (x+1)/2*(mx-mn+1e-8)+mn  
 
-    gt_n  = _norm(x_gt_phys[:s_dim])                  # (s_dim, L)
-    obs_n = (gt_n[:, obs_idx_np]                       # (s_dim, n_obs)
+    gt_n  = _norm(x_gt_phys[:s_dim])             
+    obs_n = (gt_n[:, obs_idx_np]                       
              + CONFIG["data"]["obs_noise"]
              * np.random.randn(s_dim, len(obs_idx_np)))
 
     obs_t = torch.tensor(obs_n.T[None], dtype=torch.float32, device=DEVICE)
     ot    = torch.from_numpy(obs_idx_np.astype(np.int64)).to(DEVICE)
 
-    recon = model.reconstruct(obs_t, ot, L, dt)        # (1, L, s_dim)
-    return _denorm(recon[0].cpu().numpy().T)            # (s_dim, L) physical
+    recon = model.reconstruct(obs_t, ot, L, dt)        
+    return _denorm(recon[0].cpu().numpy().T)           
 
 
 #----------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1986,7 +1968,7 @@ def csdi_reconstruct(model, diff, prep, x_obs_norm, mask, sys_name):
 # =============================================================================
 # ── SECTION 2: GRU-ODE (replaces LatentNeuralODE) ────────────────────────────
 # Functionally equivalent to Latent Neural ODE for this comparison.
-# No torchdiffeq calls during training → zero freeze risk.
+
 # =============================================================================
 
 class GRUODELatent(nn.Module):
@@ -2145,7 +2127,7 @@ def latent_ode_reconstruct(model, x_gt_phys, obs_idx_np, sys_name):
 # =============================================================================
 # ── SECTION 3: ECHO STATE NETWORK ────────────────────────────────────────────
 # Pathak et al., PRL 2018
-# FIX: res_size=500 (was 800), fit on 50 trajs (was 200) — fast on CPU
+
 # =============================================================================
 
 class EchoStateNetwork:
@@ -2213,9 +2195,7 @@ class EchoStateNetwork:
         return recon
 
 
-# =============================================================================
-# ── SECTION 4: MAIN LOOP ─────────────────────────────────────────────────────
-# =============================================================================
+
 
 N_SOA       = 10
 SOA_SYSTEMS = _SYSTEMS
@@ -2238,7 +2218,7 @@ else:
         dt    = CONFIG["data"]["dt"]
         L     = CONFIG["data"]["n_points"]
 
-        # ── ESN: fit on 50 trajectories only (fast) ───────────────────────
+        # ── ESN: ───────────────────────
         print(f"  [{sys_name.upper()}] Fitting Echo State Network …", end=" ",
               flush=True)
         esn = EchoStateNetwork(s_dim, res_size=500, seed=42)
@@ -2547,7 +2527,7 @@ print("Done — SOA checkpoint cleared.")
 
 
 # %%-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-# Emergency Import Block
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -2573,7 +2553,7 @@ print("═" * 70)
 print("  PHASE 5 · Publication Figures & Grand Summary")
 print("═" * 70)
 
-# Ensure publication-quality font and resolution defaults
+
 import matplotlib as mpl
 mpl.rcParams['pdf.fonttype'] = 42
 mpl.rcParams['ps.fonttype'] = 42
@@ -2586,7 +2566,7 @@ plot_rmse_boxplot_multi(all_res_ood, label="OOD")
 plot_lyapunov_comparison(all_res_id,  label="ID")
 plot_lyapunov_comparison(all_res_ood, label="OOD")
 
-# ── RECTIFIED: Dynamically plot whatever systems were actually simulated ──
+
 ABLATION_SYSTEMS = list(ablation_results.keys())
 
 fig, axes = plt.subplots(1, len(ABLATION_SYSTEMS), figsize=(4.5*len(ABLATION_SYSTEMS), 3.5))
@@ -2617,7 +2597,7 @@ print_grand_summary(all_res_id, all_res_ood)
 
 
 
-# ── NEW: LATEX LYAPUNOV TABLE GENERATOR ----------------------------------------------------------------------------------------------------------------------------------------------------
+# ── LYAPUNOV TABLE GENERATOR ----------------------------------------------------------------------------------------------------------------------------------------------------
 print("\n  " + "═" * 68)
 print("  LATEX TABLE EXPORT: Lyapunov Exponents (ID)")
 print("  " + "═" * 68)
@@ -2628,13 +2608,12 @@ for sname in ["lorenz", "rossler", "rabinovich"]:
     if sname in all_res_id:
         res = all_res_id[sname]
         
-        # Calculate means ignoring NaNs
+  
         gt   = np.nanmean(res.get("gt_lyap", [np.nan]))
         pidm = np.nanmean(res.get("pidm_lyap", [np.nan]))
         ai   = np.nanmean(res.get("pureai_lyap", [np.nan]))
         enkf = np.nanmean(res.get("enkf_lyap", [np.nan]))
-        
-        # Formatter to flag collapse
+       
         def fmt(val):
             if np.isnan(val): return "N/A"
             if val < 0.02: return f"${val:.3f}$ (collapse)"
@@ -2645,7 +2624,7 @@ print("  " + "═" * 68 + "\n")
 # ──────────────────────────────────────────────────────────────────────────
 
 
-# Save results CSV safely
+
 rows = []
 for cond, all_res in [("ID", all_res_id), ("OOD", all_res_ood)]:
     for sname, res in all_res.items():
@@ -2682,7 +2661,7 @@ from scipy.integrate import solve_ivp
 import torch
 from tqdm.auto import tqdm
 
-# ── Helper: smooth 3D line via Line3DCollection ───────────────────────────────
+
 def plot_smooth_3d_line_solid(ax, x, y, z, color, lw=1.8, alpha=0.95, zorder=3, ls="-"):
     """
     Draws a continuous, depth-sorted 3D line using Line3DCollection.
@@ -2701,7 +2680,7 @@ def plot_smooth_3d_line_solid(ax, x, y, z, color, lw=1.8, alpha=0.95, zorder=3, 
     ax.add_collection3d(lc)
 
 
-# ── Helper: PIDM-DP Hybrid Re-integration ────────────────────────────────────
+
 def hybrid_reintegrate(
     sys_name: str, recon_phys: np.ndarray, x_gt: np.ndarray, dt: float
 ):
@@ -2716,7 +2695,7 @@ def hybrid_reintegrate(
     true_ic     = x_gt[:s_dim, 0].tolist()
     true_params = [float(x_gt[s_dim + j, 0]) for j in range(p_dim)]
 
-    # ── FIX-PARAMS: Use first 300 steps to match Cell 15 evaluation ──
+    
     early_end = min(300, recon_phys.shape[1])
     inferred_params = [
         float(np.median(recon_phys[s_dim + j, :early_end]))
@@ -2728,7 +2707,7 @@ def hybrid_reintegrate(
         for n, i, t in zip(p_names, inferred_params, true_params)
     }
 
-    # Safety clip: prevent ODE blow-up from wildly out-of-range inferred params
+ 
     ranges      = CONFIG[sys_name].get("ranges", [])
     safe_params = []
     for j, pv in enumerate(inferred_params):
@@ -2743,13 +2722,13 @@ def hybrid_reintegrate(
     t_eval = np.linspace(0.0, x_gt.shape[1] * dt, x_gt.shape[1])
 
     try:
-        # LSODA for stiff systems (Rabinovich); DOP853 otherwise
+  
         method = "LSODA" if sys_name == "rabinovich" else "DOP853"
         sol    = solve_ivp(
             fn_np, t_span, true_ic, args=tuple(safe_params),
             method=method, t_eval=t_eval, rtol=1e-8, atol=1e-10
         )
-        # sol.y always has s_dim rows (matches len(true_ic)) — no slicing needed
+    
         hybrid = (
             sol.y
             if (sol.success and np.isfinite(sol.y).all())
@@ -2789,7 +2768,7 @@ def generate_scientific_report_v2(sys_name: str, n_trials: int = 12):
     hybrid_trajs      = []
     error_curves_pidm = []
     error_curves_ai   = []
-    obs_idx_list      = []   # exact observation indices per trial
+    obs_idx_list      = []   
 
     # ── Inference loop ────────────────────────────────────────────────────────
     for i in tqdm(range(n_trials), desc=f"  Inference {sys_name}", leave=False):
@@ -2937,8 +2916,7 @@ def generate_scientific_report_v2(sys_name: str, n_trials: int = 12):
         ax.set_xticklabels([])
         ax.set_yticklabels([])
 
-        # ── UPGRADE: Plot Ground Truth Observation Dots on ALL panels ──
-        # This proves visually that PIDM hits the dots while Pure AI misses them.
+
         gt_x_obs = x_gt_med[0, exact_obs_idx]
         gt_y_obs = x_gt_med[1, exact_obs_idx]
         
@@ -2946,9 +2924,9 @@ def generate_scientific_report_v2(sys_name: str, n_trials: int = 12):
             gt_z_obs = x_gt_med[2, exact_obs_idx]
             ax.scatter(
                 gt_x_obs, gt_y_obs, gt_z_obs,
-                color="#2980B9", s=45,               # Increased size
+                color="#2980B9", s=45,             
                 edgecolors="white", linewidths=0.8,
-                depthshade=False, zorder=10, label="10% Obs (GT)"  # depthshade=False makes them pop
+                depthshade=False, zorder=10, label="10% Obs (GT)"
             )
         else:
             ax.scatter(
@@ -2990,7 +2968,6 @@ def generate_scientific_report_v2(sys_name: str, n_trials: int = 12):
     ax_ts.plot(t_ax, recon_ai_trajs[median_idx][0],     color="#C0392B", lw=1.5, ls="--", alpha=0.80, label="Pure AI")
     ax_ts.plot(t_ax, hybrid_trajs[median_idx][0],       color="#5B2C8D", lw=2.0, alpha=0.90, label="PIDM-DP Hybrid")
 
-    # Increased dot size here as well
     ax_ts.scatter(
         t_ax[exact_obs_idx], gt_x[exact_obs_idx],
         color="#2980B9", s=45, zorder=5,
@@ -3003,7 +2980,6 @@ def generate_scientific_report_v2(sys_name: str, n_trials: int = 12):
     ax_ts.legend(fontsize=11)
     ax_ts.grid(True, ls=":", alpha=0.6)
 
-    # ── Panel B: Parameter accuracy ──────────────────────────────────────────
     ax_par = fig2.add_subplot(gs2[0, 1])
     mean_errs = [
         np.mean(param_errors_all[p]) if param_errors_all[p] else 0.0
@@ -3042,8 +3018,7 @@ def generate_scientific_report_v2(sys_name: str, n_trials: int = 12):
     ax_par.axhline(5, color="crimson", ls=":", lw=2.0, alpha=0.8, label="5% Threshold")
     ax_par.set_title("Parameter Identification Error", fontsize=16, fontweight="bold")
     ax_par.set_ylabel("Relative Error (%)", fontsize=14)
-    
-    # Scale Y limit to encompass the text offset
+  
     ax_par.set_ylim(0, max_err_val + (max_err_val * 0.15))
     ax_par.legend(fontsize=11)
     ax_par.grid(axis="y", ls=":", alpha=0.6)
@@ -3086,7 +3061,7 @@ print("\n  [CELL 22 COMPLETE]\n")
 
 
 
-# %%-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+#-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # this is ablation sweep for the different sparsity and noise
 
 import numpy as np
@@ -3104,7 +3079,7 @@ def run_comprehensive_ablation(n_trials=10):
     print(f"  STARTING MULTI-DIMENSIONAL ABLATION STUDY (n={n_trials})")
     print(f"{'='*60}")
 
-    # Settings from your CONFIG
+
     noise_levels = CONFIG.get("noise_levels", [0.0, 0.05, 0.15])
     sparsity_levels = CONFIG.get("sparsity_levels", [0.02, 0.05, 0.10])
     systems_to_test = _SYSTEMS # Lorenz, Rossler, etc.
@@ -3128,12 +3103,12 @@ def run_comprehensive_ablation(n_trials=10):
 
                 for i in range(n_trials):
                     x_gt = raw_test_data[i]
-                    # Normalize
+                  
                     x_norm = preps[sys_name].normalize(
                         torch.tensor(raw_test_data[i:i+1], dtype=torch.float32).to(DEVICE)
                     )
 
-                    # Create Mask (Sparsity)
+                 
                     mask, _ = make_random_mask(x_norm.shape, sparsity, DEVICE, s_dim)
                     
                     # Add Noise
@@ -3186,7 +3161,7 @@ def run_comprehensive_ablation(n_trials=10):
     # ── VISUALIZATION ────────────────────────────────────────────────────────
     df = pd.DataFrame(results_master)
     
-    # Create one plot per system
+    
     fig, axes = plt.subplots(len(systems_to_test), 1, figsize=(12, 5 * len(systems_to_test)))
     if len(systems_to_test) == 1: axes = [axes]
 
@@ -3194,7 +3169,7 @@ def run_comprehensive_ablation(n_trials=10):
         ax = axes[idx]
         sys_df = df[df["System"] == sys_name]
         
-        # We plot Sparsity on X, RMSE on Y, and use Hue for Noise level
+        
         sns.lineplot(
             data=sys_df, x="Sparsity", y="RMSE", hue="Noise", style="Model",
             markers=True, dashes=True, palette="viridis", ax=ax, lw=2.5
@@ -3221,30 +3196,6 @@ run_comprehensive_ablation(n_trials=10)
 
 # %%----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #only for the Lorentz
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  SPARSITY SWEEP — Observation Density vs. Parameter Recovery (ρ)           ║
-# ║  Generates: sparsity_sweep_rho_mape.pdf                                    ║
-# ║                                  ║
-# ║                                                                             ║
-# ║                                               ║
-# ║  ─────────────────────────                                                  ║
-# ║                             ║
-# ║    • models["lorenz"]   — trained PIDM-DP U-Net for Lorenz                 ║
-# ║    • preps["lorenz"]    — Lorenz preprocessor/normalizer                   ║
-# ║    • diffs["lorenz"]    — Lorenz diffusion scheduler                       ║
-# ║    • CONFIG             — full configuration dict                          ║
-# ║    • All helper functions (generate_chaotic_dataset, evaluate_system,       ║
-# ║      make_random_mask, add_observation_noise, stable_guidance, etc.)        ║
-# ║                                                                             ║
-                             
-# ║                                                                             ║
-# ║  CHECKPOINT SYSTEM:                                                         ║
-# ║  If the cell crashes partway through, re-run it — completed densities       ║
-# ║  are saved automatically and will be skipped on re-run.                    ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
-# ── Paste from here ───────────────────────────────────────────────────────────
 
 print("═" * 70)
 print("  SPARSITY SWEEP · Observation Density vs. ρ Recovery (Lorenz ID)")
@@ -3336,18 +3287,14 @@ for obs_ratio in OBS_RATIOS:
         label=f"sparsity_{obs_ratio:.0%}",
     )
 
-    # ── Extract per-trial MAPE(ρ) from results ────────────────────────────
-    #
-    #   res["pidm_param_errors"] is a list of N_TRIALS dicts.
-    #   Each dict maps param_name (str) → float (MAPE in %).
-    #   E.g.: {"σ": 19.04, "ρ": 5.26, "β": 25.36}
+
     #
     rho_mape_per_trial = []
     for trial_param_errs in res["pidm_param_errors"]:
         if isinstance(trial_param_errs, dict) and RHO_KEY in trial_param_errs:
             rho_mape_per_trial.append(float(trial_param_errs[RHO_KEY]))
         else:
-            # Fallback: if key lookup fails, try index-based access on values
+           
             try:
                 vals = list(trial_param_errs.values())
                 rho_mape_per_trial.append(float(vals[RHO_IDX]))
@@ -3357,7 +3304,7 @@ for obs_ratio in OBS_RATIOS:
                 print(f"    [WARN] Could not extract ρ MAPE: {e} — substituting NaN")
                 rho_mape_per_trial.append(float("nan"))
 
-    # Sanitise: replace inf/nan with the per-density median of finite values
+   
     finite_vals = [v for v in rho_mape_per_trial if np.isfinite(v)]
     fallback    = float(np.median(finite_vals)) if finite_vals else 999.0
     rho_mape_clean = [v if np.isfinite(v) else fallback for v in rho_mape_per_trial]
@@ -3369,15 +3316,15 @@ for obs_ratio in OBS_RATIOS:
           f"Mean = {np.mean(rho_mape_clean):.2f}%  |  "
           f"Std = {np.std(rho_mape_clean):.2f}%")
 
-    # Save checkpoint after every density so a crash wastes minimal work
+    
     save_checkpoint(CKPT_NAME, {"sweep_results": sweep_results})
 
-# ── Restore original obs_ratio ────────────────────────────────────────────────
+
 
 CONFIG["data"]["obs_ratio"] = _ORIGINAL_OBS_RATIO
 print(f"\n  CONFIG obs_ratio restored to {_ORIGINAL_OBS_RATIO}")
 
-# ── Print summary table ───────────────────────────────────────────────────────
+
 
 print("\n  " + "─"*58)
 print(f"  {'Density':>10}  {'N':>4}  {'Median MAPE(ρ)':>16}  {'Mean ± Std':>20}")
@@ -3392,13 +3339,13 @@ for ratio in OBS_RATIOS:
               f"{mn:>8.2f} ± {std:.2f}%")
 print("  " + "─"*58)
 
-# ── Publication-quality figure ────────────────────────────────────────────────
+
 
 PALETTE = {
-    "pidm":  "#6C3483",   # deep purple — matches rest of paper
-    "box":   "#A569BD",   # lighter purple fill
-    "med":   "#2C3E50",   # charcoal median line
-    "chaos_threshold": "#E74C3C",  # red dashed — ρ_c boundary context line
+    "pidm":  "#6C3483",  
+    "box":   "#A569BD",   
+    "med":   "#2C3E50",   
+    "chaos_threshold": "#E74C3C",  
 }
 
 fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
@@ -3425,7 +3372,7 @@ bp = ax1.boxplot(
     notch=False,
 )
 
-# Reference line: our 10% density result from the main paper (5.26%)
+
 ax1.axhline(5.26, color="#1A8F78", linestyle=":", linewidth=1.8, alpha=0.85,
             label=r"Main result at 10\% ($5.26\%$)")
 
@@ -3440,7 +3387,6 @@ ax1.grid(axis="y", linestyle=":", alpha=0.5)
 ax1.spines["top"].set_visible(False)
 ax1.spines["right"].set_visible(False)
 
-# ── Panel B: Median + IQR line plot ──────────────────────────────────────────
 ax2 = axes[1]
 
 medians = [np.median(sweep_results.get(r, [np.nan])) for r in OBS_RATIOS]
@@ -3474,7 +3420,7 @@ ax2.spines["right"].set_visible(False)
 ax2.set_xticks([2, 5, 10, 20, 50])
 ax2.set_xticklabels(["2", "5", "10", "20", "50"])
 
-# ── Overall title and layout ──────────────────────────────────────────────────
+
 
 fig.suptitle(
     r"Lorenz 63 Rayleigh Number Recovery vs.\ Observation Density "
@@ -3515,9 +3461,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm.auto import tqdm
 
-# =============================================================================
-# 1. PYTORCH ODE DEFINITIONS (unchanged — these are correct)
-# =============================================================================
+
 def get_sys_fn_pytorch(sys_name):
     """Returns a PyTorch-differentiable version of each chaotic ODE."""
 
@@ -3556,9 +3500,7 @@ def get_sys_fn_pytorch(sys_name):
     }.get(sys_name, zero_physics_pt)
 
 
-# =============================================================================
-# 2. NEURAL NETWORK ARCHITECTURES (unchanged — these are correct)
-# =============================================================================
+
 class ChaoticLSTM(nn.Module):
     """Bidirectional LSTM for sparse chaotic time-series interpolation."""
     def __init__(self, s_dim, hidden_dim=64, num_layers=2):
@@ -3592,21 +3534,9 @@ class ChaoticPINN(nn.Module):
 
 
 # =============================================================================
-# 3. ACTIVE INFERENCE FUNCTIONS — ALL BUGS FIXED
+# 3. ACTIVE INFERENCE FUNCTIONS —
 # =============================================================================
-
-# ── How mask is structured (important for understanding the fixes) ────────────
-# make_random_mask returns mask of shape (B=1, total_channels, L)
-# where total_channels = s_dim + p_dim (e.g. 6 for Lorenz).
-# The mask is 1.0 at observed time steps and 0.0 elsewhere.
-# All channels share the same temporal pattern (observation is in time, not
-# in channel space), so we take mask[0, 0, :] as the 1-D observation mask.
-#
-# preps[sys_name].denormalize(x_obs) returns shape (B, total_channels, L).
-# The state lives in channels [0 : s_dim].
-# So the correct extraction is denorm[0, :s_dim, :] → (s_dim, L).
 # ─────────────────────────────────────────────────────────────────────────────
-
 def run_lstm_inference(sys_name, x_obs, mask, s_dim, steps=250):
     """
     Trains a Bi-LSTM from scratch on the 10% observed data points for this
@@ -3624,14 +3554,13 @@ def run_lstm_inference(sys_name, x_obs, mask, s_dim, steps=250):
     optimizer = optim.Adam(model.parameters(), lr=2e-3)
     criterion = nn.MSELoss()
 
-    # ── FIX 1: use [0, :s_dim, :] not [:s_dim, :] to get (s_dim, L) ─────────
+   
     obs_state = preps[sys_name].denormalize(x_obs)[0, :s_dim, :].to(DEVICE)
-    # obs_state shape: (s_dim, L)
+  
 
-    # ── FIX 2: 1-D temporal mask (L,) — not (C, L) ───────────────────────────
     obs_mask_1d = mask[0, 0, :].bool()   # (L,)
 
-    # ── FIX 4: correct mask slice [0, :s_dim, :] not [:s_dim, :] ─────────────
+   
     sparse_input = (obs_state * mask[0, :s_dim, :]).T.unsqueeze(0)
     # sparse_input shape: (1, L, s_dim)
 
@@ -3642,14 +3571,14 @@ def run_lstm_inference(sys_name, x_obs, mask, s_dim, steps=250):
         optimizer.zero_grad()
         pred = model(sparse_input)   # (1, L, s_dim)
 
-        # ── FIX 3: index (L, s_dim) with (L,) bool mask — shapes match ────────
+      
         loss = criterion(pred[0][obs_mask_1d], target[0][obs_mask_1d])
         loss.backward()
         optimizer.step()
 
     model.eval()
     with torch.no_grad():
-        final_pred = model(sparse_input).squeeze(0).T   # (s_dim, L)
+        final_pred = model(sparse_input).squeeze(0).T  
 
     return final_pred.cpu().numpy()
 
@@ -3674,35 +3603,32 @@ def run_pinn_inference(sys_name, x_obs, mask, s_dim, dt=0.05, steps=500):
     model = ChaoticPINN(s_dim).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-    # ── FIX 5: seq_len from dimension 2 (L), NOT dimension 1 (channels) ───────
-    seq_len = x_obs.shape[2]   # was incorrectly x_obs.shape[1] = n_channels
+    
+    seq_len = x_obs.shape[2]   
 
-    # t must have requires_grad=True for physics loss autograd
+
     t = torch.linspace(0, seq_len * dt, seq_len,
                        requires_grad=True).unsqueeze(1).to(DEVICE)
-    # t shape: (L, 1)
 
-    # ── FIX 1: correct state extraction ───────────────────────────────────────
+
     obs_state = preps[sys_name].denormalize(x_obs)[0, :s_dim, :].to(DEVICE)
-    # obs_state shape: (s_dim, L)
 
-    # ── FIX 2: 1-D temporal mask ───────────────────────────────────────────────
+
     obs_mask_1d = mask[0, 0, :].bool()   # (L,)
 
-    # Physics ODE and mean parameter values
     physics_fn = get_sys_fn_pytorch(sys_name)
     mean_params = [(r[0] + r[1]) / 2.0 for r in CONFIG[sys_name]["ranges"]]
 
     for _ in range(steps):
         optimizer.zero_grad()
-        x_pred = model(t)   # (L, s_dim)
+        x_pred = model(t)  
 
-        # ── FIX 3: index (L, s_dim) with (L,) bool — shapes match ─────────────
+     
         data_loss = torch.mean(
             (x_pred[obs_mask_1d] - obs_state.T[obs_mask_1d]) ** 2
         )
 
-        # Physics loss: dxdt from autograd vs ODE residual
+      
         dxdt_pred = torch.zeros_like(x_pred)   # (L, s_dim)
         for i in range(s_dim):
             grad_i = torch.autograd.grad(
@@ -3713,18 +3639,18 @@ def run_pinn_inference(sys_name, x_obs, mask, s_dim, dt=0.05, steps=500):
             )[0]
             dxdt_pred[:, i] = grad_i.squeeze()
 
-        dxdt_ode = physics_fn(t, x_pred, *mean_params)   # (L, s_dim)
+        dxdt_ode = physics_fn(t, x_pred, *mean_params)   
         physics_loss = torch.mean((dxdt_pred - dxdt_ode) ** 2)
 
         loss = data_loss + 0.1 * physics_loss
         loss.backward()
         optimizer.step()
 
-    # ── FIX 6: use detached t for final inference to avoid stale graph ────────
+  
     model.eval()
     with torch.no_grad():
         t_eval = t.detach()
-        final_pred = model(t_eval).T.cpu().numpy()   # (s_dim, L)
+        final_pred = model(t_eval).T.cpu().numpy()  
 
     return final_pred
 
@@ -3822,12 +3748,12 @@ def run_ultimate_baseline_comparison(n_trials=10):
     print("═"*70)
     print(summary.to_string())
 
-    # Save CSV so you can insert exact numbers into the paper without re-running
+
     csv_path = CONFIG["paths"]["results_dir"] + "baseline_comparison_lstm_pinn.csv"
     df.to_csv(csv_path, index=False)
     print(f"\n  ✓ Raw results saved → {csv_path}")
 
-    # ── Log-scale bar plot (ID only for clarity) ──────────────────────────────
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
     fig.patch.set_facecolor("white")
 
@@ -3900,18 +3826,14 @@ def plot_forward_diffusion_v2(sys_name: str):
         wspace=0.05, width_ratios=[1] * n_steps + [0.06]
     )
 
-    # FIX B: use a custom colormap that transitions plasma → near-black so the
-    #         colorbar accurately reflects the colour used on EVERY panel,
-    #         including the final "pure noise" step.  Replaces the old manual
-    #         black override that left the colorbar ending at bright yellow.
     plasma_colors = plt.cm.plasma(np.linspace(0.0, 0.85, 256))
-    plasma_colors[-1] = [0.05, 0.05, 0.05, 1.0]   # near-black at t = T
+    plasma_colors[-1] = [0.05, 0.05, 0.05, 1.0]   
     custom_cmap = LinearSegmentedColormap.from_list(
         "plasma_dark_end", plasma_colors
     )
 
     for idx, t_val in enumerate(t_steps):
-        # ── Noisy sample at this diffusion step ──────────────────────────────
+      
         if t_val == 0:
             x_t_norm = x0_norm
         else:
@@ -3920,7 +3842,7 @@ def plot_forward_diffusion_v2(sys_name: str):
 
         x_t_phys   = preps[sys_name].denormalize(x_t_norm).cpu().numpy()[0]
         color_frac  = idx / (n_steps - 1)
-        color       = custom_cmap(color_frac)   # FIX B: consistent with colorbar
+        color       = custom_cmap(color_frac)  
 
         lw_val    = 1.2 - 0.6 * color_frac
         alpha_val = max(0.3, 0.9 - 0.5 * color_frac)
@@ -3938,8 +3860,7 @@ def plot_forward_diffusion_v2(sys_name: str):
             )
             ax.add_collection3d(lc)
 
-            # FIX C: Line3DCollection does NOT auto-scale 3D axes.
-            #         Set limits explicitly from the actual data each step.
+
             pad = 0.5
             ax.set_xlim(x_.min() - pad, x_.max() + pad)
             ax.set_ylim(y_.min() - pad, y_.max() + pad)
@@ -3955,7 +3876,7 @@ def plot_forward_diffusion_v2(sys_name: str):
         else:
             ax = fig.add_subplot(gs[0, idx])
             x_ = x_t_phys[0]
-            # FIX D: use zeros_like instead of np.zeros(1000) — length-agnostic
+         
             y_ = x_t_phys[1] if s_dim > 1 else np.zeros_like(x_)
             ax.plot(x_, y_, lw=lw_val, alpha=alpha_val, color=color)
             ax.set_xticks([])
@@ -4096,10 +4017,10 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
         early_end = min(300, pidm_phys.shape[1])
         raw_inferred = [float(np.median(pidm_phys[s_dim + j, :early_end])) for j in range(p_dim)]
         
-        # Safety clip to prevent ODE solver blow-ups
+       
         ranges = CONFIG[sys_name].get("ranges", [])
         
-        # Safety clip to prevent ODE solver blow-ups
+
         ranges = CONFIG[sys_name].get("ranges", [])
         inferred_params = []
         for j, pv in enumerate(raw_inferred):
@@ -4109,12 +4030,12 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
                 pv = float(np.clip(pv, lo - 3 * w, hi + 3 * w))
             inferred_params.append(pv)
 
-        # ── HYBRID ODE INTEGRATION ────────────────────────────────────────────
+       
         fn_np  = get_sys_fn(sys_name)
         t_span = (0.0, gt_state.shape[1] * dt_val)
         t_eval = np.linspace(0.0, gt_state.shape[1] * dt_val, gt_state.shape[1])
         
-        # Use correct integrator for stiff systems
+    
         ode_method = "LSODA" if sys_name == "rabinovich" else "DOP853"
         
         try:
@@ -4128,7 +4049,7 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
         except Exception:
             hybrid = pidm_phys[:s_dim]
 
-        # ── TRAJECTORY BUNDLE ─────────────────────────────────────────────────
+    
         trajs_info = [
             (gt_state,          "#1A1A2E", 1.5, 0.90, "-"),
             (ai_phys[:s_dim],   "#C0392B", 1.5, 0.85, "--"),
@@ -4143,14 +4064,14 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
             trajectory_rmse(gt_state, hybrid),
         ]
 
-        # ── TRAJECTORY SUBPLOTS ───────────────────────────────────────────────
+     
         for ci, ((traj, color, lw, alpha, ls), rmse_val) in enumerate(zip(trajs_info, rmses)):
             ax = fig.add_subplot(gs[row, ci], projection="3d" if is_3d else None)
 
             def _z(arr):
                 return arr[2] if is_3d else np.zeros_like(arr[0])
 
-            # Use plot_smooth_3d_line_solid to prevent Z-fighting
+           
             if is_3d:
                 if ci > 0:
                     plot_smooth_3d_line_solid(ax, gt_state[0], gt_state[1], _z(gt_state), color="#CCCCCC", lw=0.8, alpha=0.3, zorder=1)
@@ -4164,7 +4085,7 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
                 ax.set_zticklabels([])
                 ax.view_init(elev=22, azim=50)
             else:
-                # Standard 2D plot for 2D systems
+               
                 if ci > 0:
                     ax.plot(gt_state[0], gt_state[1], color="#CCCCCC", lw=0.8, alpha=0.3, zorder=1)
                 ax.plot(traj[0], traj[1], color=color, lw=lw, alpha=alpha, ls=ls, zorder=3)
@@ -4174,7 +4095,7 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
             ax.set_xticklabels([])
             ax.set_yticklabels([])
 
-            # POLISH 1: Add the sparse observation dots to the Ground Truth panel
+            
             if ci == 0:
                 if is_3d:
                     ax.scatter(traj[0, obs_idx], traj[1, obs_idx], traj[2, obs_idx], color="#2980B9", s=25, edgecolors="white", linewidths=0.6, zorder=10, label="10% obs")
@@ -4204,7 +4125,7 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
                     fontsize=16, fontweight="bold", rotation=90
                 )
 
-        # ── PARAMETER BAR CHART ───────────────────────────────────────────────
+       
         ax_p = fig.add_subplot(gs[row, 4])
         xpos = np.arange(len(p_names))
         bw   = 0.35
@@ -4224,7 +4145,7 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
         ax_p.set_xticklabels(p_names, fontsize=14)
         ax_p.tick_params(axis="y", labelsize=12)
         
-        # POLISH 2: Dynamic headroom for the Y-axis so text doesn't hit the ceiling
+        
         max_bar_val = max(max(true_params), max(raw_inferred)) if true_params else 1.0
         ax_p.set_ylim(0, max_bar_val * 1.30)
         
@@ -4234,7 +4155,7 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
             ax_p.set_title(col_headers[4][0], color=col_headers[4][1], fontsize=16, fontweight="bold", pad=15)
             ax_p.legend(fontsize=12, loc="upper right")
 
-    # ── FIGURE TITLE & SAVE ───────────────────────────────────────────────────
+ 
     fig.suptitle(
         f"PIDM-DP  ·  {sys_name.upper()}  ·  10% Observation Density\n"
         "All panels use identical axis limits (ground truth range)",
@@ -4243,7 +4164,7 @@ def plot_ablation_grid(sys_name: str, n_rows: int = 3):
 
     path = CONFIG["paths"]["figures"] + f"ablation_grid_{sys_name}.pdf"
 
-    # Leave top room for the suptitle so it doesn't overlap
+ 
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     plt.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -4338,12 +4259,12 @@ def plot_reverse_diffusion_progress(sys_name: str, sample_idx: int = 0):
     snap_steps_sorted = sorted(snap_steps, reverse=True)
     n_snaps = len(snap_steps_sorted)
 
-    # ── FIGURE: extra height added to prevent title collision ─────────────────
-    fig = plt.figure(figsize=(5 * n_snaps, 10.5))   # ← increased from 8.5 → 10.5
+ 
+    fig = plt.figure(figsize=(5 * n_snaps, 10.5))   
     fig.patch.set_facecolor("white")
 
     gs  = gridspec.GridSpec(2, n_snaps, figure=fig,
-                            hspace=0.55,             # ← increased from 0.45 → 0.55
+                            hspace=0.55,            
                             wspace=0.05,
                             height_ratios=[1.4, 0.6])
 
@@ -4383,15 +4304,15 @@ def plot_reverse_diffusion_progress(sys_name: str, sample_idx: int = 0):
 
         phy_str = f"\nPhy. loss = {phy_l:.3f}" if phy_l and not np.isnan(phy_l) else ""
 
-        # ── Subplot title pushed DOWN via negative y in set_title ─────────────
+       
         ax0.set_title(
             f"t = {t_val}\n{step_label}{phy_str}",
             fontsize=13, fontweight="bold",
-            pad=2,          # ← reduced from 8 → 2 (less upward push)
-            y=-0.12,        # ← NEW: negative y places title BELOW the axes
+            pad=2,          
+            y=-0.12,       
         )
 
-        # Row 1: Progress bars
+   
         ax1 = fig.add_subplot(gs[1, idx])
         ab_val = float(diff.alpha_bars[t_val].item())
         signal_frac = ab_val
@@ -4408,17 +4329,16 @@ def plot_reverse_diffusion_progress(sys_name: str, sample_idx: int = 0):
         for sp in ["top", "right"]:
             ax1.spines[sp].set_visible(False)
 
-    # ── Main heading: pushed up further so subplots can't reach it ───────────
     fig.suptitle(
         f"Reverse Diffusion Progress  —  {sys_name.upper()}\n"
         f"Reading left to right: pure Gaussian noise gradually crystallises "
         f"into the strange attractor under physics guidance",
         fontsize=20, fontweight="bold",
-        y=0.90,         # ← changed from 0.96 → 1.02 (sits above the figure box)
+        y=0.90,        
     )
 
-    # ── rect top at 0.93 reserves a clear band below the suptitle ────────────
-    plt.tight_layout(rect=[0, 0, 1, 0.88])   # ← changed from 0.88 → 0.93
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.88])   
 
     path = CONFIG["paths"]["figures"] + f"reverse_diffusion_progress_{sys_name}.pdf"
     plt.savefig(path, dpi=700, bbox_inches="tight")
@@ -4431,10 +4351,7 @@ for sname in ["lorenz", "rabinovich", "lorenz96","rossler", "hyper5d" ]:
 
 print("\n  [CELL 25 COMPLETE]\n")
 
-# %%
-# ============================================================================
-# Introductory Plots: Ground Truth Topologies for All Systems
-# ============================================================================
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -4448,17 +4365,16 @@ def generate_introductory_figures():
 
     os.makedirs(CONFIG["paths"]["figures"], exist_ok=True)
 
-    # Reference parameters known to produce canonical chaotic attractors
-    # (Using the midpoints of your training ranges)
+
     INTRO_PARAMS = {
-        "lorenz": [10.0, 28.0, 8/3],               # sigma, rho, beta
-        "rossler": [0.2, 0.2, 5.7],                # a, b, c
-        "hyper5d": [35.0, 35.0, 3.0],              # p1, p2, p3
-        "lorenz96": [8.0],                         # F
-        "rabinovich": [0.14, 0.10]                 # alpha, gamma
+        "lorenz": [10.0, 28.0, 8/3],               
+        "rossler": [0.2, 0.2, 5.7],               
+        "hyper5d": [35.0, 35.0, 3.0],              
+        "lorenz96": [8.0],                         
+        "rabinovich": [0.14, 0.10]                 
     }
 
-    # Initial conditions 
+   
     INTRO_ICS = {
         "lorenz": [1.0, 1.0, 1.0],
         "rossler": [1.0, 1.0, 1.0],
@@ -4474,49 +4390,47 @@ def generate_introductory_figures():
         params = INTRO_PARAMS[sys_name]
         ic     = INTRO_ICS[sys_name]
         
-        # Simulate a long trajectory to capture the dense attractor shape
+        
         t_span = (0, 150)
         t_eval = np.linspace(0, 150, 7500)
         
-        # Use LSODA for stiff systems (Rabinovich), DOP853 otherwise
+      
         method = "LSODA" if sys_name == "rabinovich" else "DOP853"
         sol = solve_ivp(
             fn_np, t_span, ic, args=tuple(params), 
             method=method, t_eval=t_eval, rtol=1e-8, atol=1e-10
         )
         
-        # Discard the transient (first 20% of the simulation) so the line is purely on the attractor
+      
         transient_idx = int(len(sol.t) * 0.2)
-        t_plot = sol.t[transient_idx:] - sol.t[transient_idx]  # reset time to 0
+        t_plot = sol.t[transient_idx:] - sol.t[transient_idx] 
         traj   = sol.y[:, transient_idx:]
         
-        # --- Create Figure ---
         fig = plt.figure(figsize=(15, 6))
         fig.patch.set_facecolor('white')
         
-        # 1. Phase Portrait (3D) - Left Side
+     
         ax1 = fig.add_subplot(1, 2, 1, projection='3d')
         
-        # Project down to first 3 variables for all systems
+    
         ax1.plot(traj[0], traj[1], traj[2], lw=0.5, alpha=0.8, color='#1A1A2E')
         
         ax1.set_xlabel('$x_1$' if sys_name != 'lorenz' else 'X', labelpad=10)
         ax1.set_ylabel('$x_2$' if sys_name != 'lorenz' else 'Y', labelpad=10)
         ax1.set_zlabel('$x_3$' if sys_name != 'lorenz' else 'Z', labelpad=10)
-        
-        # Format parameter string nicely
+ 
         param_names = CONFIG[sys_name]["param_names"]
         param_str = ", ".join([f"{n}={v:.2f}" for n, v in zip(param_names, params)])
         ax1.set_title(f"Phase Space\n({param_str})", fontweight='bold', pad=15)
         
-        # Clean up panes for a modern scientific look
+
         ax1.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
         ax1.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
         ax1.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
         ax1.view_init(elev=25, azim=45)
 
-        # 2. Time Series (Stacked) - Right Side
-        # Limit to visualizing a readable chunk of time (e.g., 1500 steps)
+
+   
         plot_steps = 1500
         t_ts    = t_plot[:plot_steps]
         traj_ts = traj[:, :plot_steps]
@@ -4544,69 +4458,20 @@ def generate_introductory_figures():
         ax_z.set_xlabel('Time (s)', fontsize=12)
         ax_z.grid(True, ls=':', alpha=0.6)
 
-        # For Lorenz-96 and Hyper5D, add a note that these are just the first 3 dimensions
+
         dim_note = f" (Projected $x_1, x_2, x_3$)" if len(ic) > 3 else ""
         fig.suptitle(f'Canonical Attractor Topology: {sys_name.upper()}{dim_note}', 
                      fontsize=18, fontweight='bold', y=1.02)
-        
-        # Save high-res PDF
+ 
         save_path = os.path.join(CONFIG["paths"]["figures"], f"report_intro_{sys_name}.pdf")
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
         
     print("\n  ✓ Successfully generated 5 introductory PDFs in the figures folder!")
 
-# Run the function
 generate_introductory_figures()
 
-# %%
-print()
-print("╔══════════════════════════════════════════════════════════════════════════════╗")
-print("║                     PIDM-DP V9  PIPELINE COMPLETE ✓                       ║")
-print("║                                                                              ║")
-print("║  Scientific Advances over V8:                                               ║")
-print("║    [INT-1] DOP853 (8th-order Dormand-Prince) for trajectory generation     ║")
-print("║    [INT-2] DP-RK45 (5th-order) differentiable physics constraint           ║")
-print("║    [SCI-8] Per-system physics weights solve Lorenz96 & Rabinovich issues   ║")
-print("║    [NEW-1] Full checkpoint/resume — session-crash safe                     ║")
-print("║    [NEW-2] Pure AI baseline quantifies physics component contribution      ║")
-print("║    [NEW-4] λ_phy ablation sweep for publication-quality ablation tables    ║")
-print("║    [NEW-5] Publication-quality PDF figures (serif fonts, journal palette)  ║")
-print("║                                                                              ║")
-print(f"║    Figures   →  {CONFIG['paths']['figures']:<57}║")
-print(f"║    Results   →  {CONFIG['paths']['results_dir']:<57}║")
-print(f"║    Checkpoints → {CONFIG['paths']['checkpoints']:<55}║")
-print("║                                                                              ║")
-print("║  Target Journals:                                                           ║")
-print("║    • Chaos (AIP) — IF 2.9  — ideal domain fit                              ║")
-print("║    • J. Computational Physics — IF 4.1  — strong methods paper             ║")
-print("║    • Physical Review E — IF 2.4  — physics-first framing                  ║")
-print("║    • NeurIPS / ICLR Workshop (submission as conference paper)               ║")
-print("╚══════════════════════════════════════════════════════════════════════════════╝")
 
 
-# %%
-import shutil
-shutil.rmtree('/kaggle/working/models/checkpoint_ablation_sweep.pkl/', ignore_errors=True)
-print("Cleaned up broken folder!")
-
-# %%
-delete_checkpoint("checkpoint_eval_id_hyper5d")
-
-
-# %%
-import os
-import glob
-
-# Find and delete ALL evaluation and ablation checkpoints
-ckpt_dir = CONFIG["paths"]["checkpoints"]
-stale_ckpts = glob.glob(os.path.join(ckpt_dir, "checkpoint_eval_*.pkl")) + \
-              glob.glob(os.path.join(ckpt_dir, "checkpoint_ablation_*.pkl"))
-
-for f in stale_ckpts:
-    os.remove(f)
-    print(f"Deleted stale checkpoint: {os.path.basename(f)}")
-
-print("\nAll stale evaluation data cleared. Ready to Run All!")
 
 
