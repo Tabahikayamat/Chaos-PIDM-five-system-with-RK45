@@ -25,7 +25,7 @@ Lorenz-96 (20D High-dimensional)
 Clone the repository:
 code
 Bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
+git clone https://github.com/Tabahikayamat/Chaos-PIDM-five-system-with-RK45.git
 cd YOUR_REPO_NAME
 Install dependencies:
 The code relies on standard data science and deep learning libraries.
