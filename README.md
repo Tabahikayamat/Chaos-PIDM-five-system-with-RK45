@@ -7,7 +7,7 @@ Physics-Informed Diffusion Models for Chaotic Dynamical Systems (PIDM-DP)
 ![alt text](https://img.shields.io/badge/license-MIT-green.svg)
 This repository contains the official implementation of PIDM-DP (Physics-Informed Diffusion Models with Dormand-Prince Integration). PIDM-DP is a hybrid generative AI framework designed to reconstruct hidden states and infer unknown physical parameters of highly chaotic dynamical systems from highly sparse (e.g., 10%) and noisy observations.
 By embedding a fully differentiable Dormand-Prince (RK45) ODE solver directly into the reverse diffusion process, PIDM-DP bridges the gap between deep generative priors and strict physical laws.
-** Key Features
+* Key Features
 Joint Inference: Simultaneously reconstructs unobserved chaotic trajectories and identifies unknown ODE parameters.
 Differentiable Physics: Utilizes a custom, double-precision PyTorch implementation of the Dormand-Prince (RK45) integrator for stable physics guidance. (Includes LSODA fallback for stiff systems).
 Temporal U-Net with Cross-Attention: Uses a 1D Temporal U-Net to denoise sequential data efficiently.
@@ -39,11 +39,11 @@ code
 Bash
 python pidm_main.py
 (If you are using Jupyter Notebook/Lab, you can paste the code into a notebook and run it cell by cell, as the code is demarcated by # %% cell markers).
-** The Checkpointing System (Important)
+* The Checkpointing System (Important)
 Because training and evaluation on 5 chaotic systems takes time, the code saves its state to the ./models/ directory after every major phase.
 If you run the script again, it will skip phases it has already completed.
 To force a retrain or re-evaluation: Simply delete the corresponding .pkl files in the ./models/ folder (e.g., rm ./models/checkpoint_train_lorenz.pkl).
-** Pipeline Architecture
+* Pipeline Architecture
 The execution is divided into distinct phases:
 Phase 1: Training PIDM-DP. Trains the unconditional Temporal U-Net on simulated chaotic trajectories using standard DDPM.
 Phase 2: In-Distribution (ID) Evaluation. Tests reconstruction and parameter inference using test parameters sampled from the training distribution.
